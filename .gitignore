@@ -110,4 +110,5 @@ screenshots/*.mp4
 screenshots/*.webm
 
 replays/
-results/
+results/__pycache__/
+*.pyc

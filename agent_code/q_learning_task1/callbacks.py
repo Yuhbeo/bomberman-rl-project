@@ -7,7 +7,7 @@ import numpy as np
 
 
 ACTIONS = ['UP', 'RIGHT', 'DOWN', 'LEFT', 'WAIT', 'BOMB']
-MODEL_FILE = "q_table.pkl"
+MODEL_FILE = "agent_code/q_learning_task1/q_table.pkl"
 
 
 def setup(self):

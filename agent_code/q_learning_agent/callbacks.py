@@ -16,44 +16,100 @@ def setup(self):
     """
 
     if os.path.isfile(MODEL_FILE):
-        self.logger.info("Loading Q-table.")
-        with open(MODEL_FILE, "rb") as file:
-            self.q_table = pickle.load(file)
+        try:
+            self.logger.info("Loading Q-table.")
+
+            with open(MODEL_FILE, "rb") as file:
+                self.q_table = pickle.load(file)
+
+        except (EOFError, pickle.UnpicklingError):
+            self.logger.warning(
+                "Q-table file is empty or corrupted. Creating new Q-table."
+            )
+            self.q_table = {}
+
     else:
         self.logger.info("Creating new Q-table.")
         self.q_table = {}
 
 
 def act(self, game_state: dict) -> str:
+    """
+    Wählt eine Aktion mit epsilon-greedy Q-Learning.
+    """
+
     state = state_to_features(game_state)
 
     if state not in self.q_table:
         self.q_table[state] = np.zeros(len(ACTIONS))
 
-    epsilon = 0.10
+    epsilon = 0.20
+
+    # State:
+    # 0 coin_direction
+    # 1 crate_direction
+    # 2 up_free
+    # 3 right_free
+    # 4 down_free
+    # 5 left_free
+    # 6 in_danger
+    # 7 escape_direction
+    # 8 bomb_available
+    # 9 crate_nearby
+
+    in_danger = state[6]
+    bomb_available = state[8]
+    crate_nearby = state[9]
+
+    # Alle vier Bewegungsaktionen bleiben möglich.
+    allowed_action_indices = [0, 1, 2, 3]
+
+    # Bombe nur, wenn sie verfügbar ist,
+    # eine Kiste direkt daneben steht
+    # und wir aktuell nicht in Gefahr sind.
+    if (
+        bomb_available
+        and crate_nearby
+        and not in_danger
+    ):
+        allowed_action_indices.append(5)
 
     # Exploration
     if self.train and random.random() < epsilon:
-        return random.choice(['UP', 'RIGHT', 'DOWN', 'LEFT'])
+        action_index = random.choice(
+            allowed_action_indices
+        )
+        return ACTIONS[action_index]
 
-    # Für Task 1 nur Bewegungsaktionen berücksichtigen
-    movement_q_values = self.q_table[state][:4]
+    # Exploitation
+    q_values = self.q_table[state][
+        allowed_action_indices
+    ]
 
-    max_q = np.max(movement_q_values)
+    max_q = np.max(q_values)
 
-    best_actions = np.where(movement_q_values == max_q)[0]
+    best_positions = np.where(
+        q_values == max_q
+    )[0]
 
-    action_index = random.choice(best_actions)
+    selected_position = random.choice(
+        best_positions
+    )
+
+    action_index = allowed_action_indices[
+        selected_position
+    ]
 
     return ACTIONS[action_index]
 
-def direction_to_nearest_coin(field, start, coins):
-    """
-    Finds a shortest path to the nearest reachable coin using BFS.
-    Returns only the first movement direction of that path.
 
-    Possible return values:
-    "UP", "RIGHT", "DOWN", "LEFT", None
+def direction_to_nearest_coin(
+    field,
+    start,
+    coins
+):
+    """
+    BFS zum nächsten erreichbaren Coin.
     """
 
     if not coins:
@@ -72,115 +128,54 @@ def direction_to_nearest_coin(field, start, coins):
     ]
 
     while queue:
+
         (x, y), first_action = queue.popleft()
 
-        # Coin reached
         if (x, y) in coins:
             return first_action
 
         for (dx, dy), action in directions:
+
             nx = x + dx
             ny = y + dy
-            next_position = (nx, ny)
 
-            # Already checked
+            next_position = (
+                nx,
+                ny
+            )
+
             if next_position in visited:
                 continue
 
-            # Only walk on free tiles
             if field[nx, ny] != 0:
                 continue
 
-            visited.add(next_position)
+            visited.add(
+                next_position
+            )
 
-            # Remember the first action of the path
             if first_action is None:
                 new_first_action = action
             else:
                 new_first_action = first_action
 
-            queue.append((next_position, new_first_action))
+            queue.append(
+                (
+                    next_position,
+                    new_first_action
+                )
+            )
 
-    # No reachable coin found
     return None
 
-def get_danger_map(game_state):
+
+def direction_to_nearest_crate(
+    field,
+    start
+):
     """
-    Creates a binary danger map.
-
-    0 = currently safe
-    1 = threatened by a bomb or active explosion
+    BFS zu einem freien Feld direkt neben der nächsten Kiste.
     """
-
-    field = game_state["field"]
-    bombs = game_state["bombs"]
-    explosion_map = game_state["explosion_map"]
-
-    danger_map = np.zeros_like(field, dtype=int)
-
-    # Tiles with an active explosion are dangerous
-    danger_map[explosion_map > 0] = 1
-
-    for (bomb_x, bomb_y), timer in bombs:
-
-        danger_map[bomb_x, bomb_y] = 1
-
-        directions = [
-            (0, -1),   # UP
-            (1, 0),    # RIGHT
-            (0, 1),    # DOWN
-            (-1, 0)    # LEFT
-        ]
-
-        for dx, dy in directions:
-
-            for distance in range(1, 4):
-
-                x = bomb_x + dx * distance
-                y = bomb_y + dy * distance
-
-                # Stay inside board
-                if (
-                    x < 0 or x >= field.shape[0]
-                    or y < 0 or y >= field.shape[1]
-                ):
-                    break
-
-                # Stone wall blocks explosion
-                if field[x, y] == -1:
-                    break
-
-                danger_map[x, y] = 1
-
-                # Explosion hits crate but does not continue
-                if field[x, y] == 1:
-                    break
-
-    return danger_map
-
-def direction_to_safety(game_state):
-    """
-    Finds a shortest path from the agent's current position
-    to a safe tile.
-
-    Returns:
-    "UP", "RIGHT", "DOWN", "LEFT" or None
-    """
-
-    field = game_state["field"]
-    x, y = game_state["self"][3]
-
-    danger_map = get_danger_map(game_state)
-    
-    bomb_positions = {
-    position for position, timer in game_state["bombs"]
-}
-
-    start = (x, y)
-
-    # Already safe
-    if danger_map[x, y] == 0:
-        return None
 
     queue = deque()
     queue.append((start, None))
@@ -195,57 +190,249 @@ def direction_to_safety(game_state):
     ]
 
     while queue:
-        (current_x, current_y), first_action = queue.popleft()
 
-        # Safe tile found
-        if danger_map[current_x, current_y] == 0:
-            return first_action
+        (x, y), first_action = queue.popleft()
 
+        # Kiste direkt neben diesem Feld?
+        for (dx, dy), _ in directions:
+
+            nx = x + dx
+            ny = y + dy
+
+            if field[nx, ny] == 1:
+                return first_action
+
+        # BFS fortsetzen
         for (dx, dy), action in directions:
-            nx = current_x + dx
-            ny = current_y + dy
 
-            next_position = (nx, ny)
+            nx = x + dx
+            ny = y + dy
+
+            next_position = (
+                nx,
+                ny
+            )
 
             if next_position in visited:
                 continue
 
-            # Only free tiles can be entered
             if field[nx, ny] != 0:
                 continue
 
-            if next_position in bomb_positions:
-                continue
-
-            visited.add(next_position)
+            visited.add(
+                next_position
+            )
 
             if first_action is None:
                 new_first_action = action
             else:
                 new_first_action = first_action
 
-            queue.append((next_position, new_first_action))
+            queue.append(
+                (
+                    next_position,
+                    new_first_action
+                )
+            )
 
-    # No escape found
     return None
 
+
+def get_danger_map(game_state):
+    """
+    Binäre Gefahrenkarte.
+
+    0 = sicher
+    1 = Bombe / Explosion bedroht dieses Feld
+    """
+
+    field = game_state["field"]
+    bombs = game_state["bombs"]
+    explosion_map = game_state["explosion_map"]
+
+    danger_map = np.zeros_like(
+        field,
+        dtype=int
+    )
+
+    # Aktive Explosionen
+    danger_map[
+        explosion_map > 0
+    ] = 1
+
+    directions = [
+        (0, -1),
+        (1, 0),
+        (0, 1),
+        (-1, 0)
+    ]
+
+    for (bomb_x, bomb_y), timer in bombs:
+
+        danger_map[
+            bomb_x,
+            bomb_y
+        ] = 1
+
+        for dx, dy in directions:
+
+            for distance in range(1, 4):
+
+                x = bomb_x + dx * distance
+                y = bomb_y + dy * distance
+
+                if (
+                    x < 0
+                    or x >= field.shape[0]
+                    or y < 0
+                    or y >= field.shape[1]
+                ):
+                    break
+
+                # Steinwand stoppt Explosion.
+                if field[x, y] == -1:
+                    break
+
+                danger_map[x, y] = 1
+
+                # Kiste wird getroffen und stoppt Explosion.
+                if field[x, y] == 1:
+                    break
+
+    return danger_map
+
+
+def direction_to_safety(game_state):
+    """
+    BFS zum nächsten sicheren Feld.
+    """
+
+    field = game_state["field"]
+
+    x, y = game_state["self"][3]
+
+    danger_map = get_danger_map(
+        game_state
+    )
+
+    bomb_positions = {
+        position
+        for position, timer
+        in game_state["bombs"]
+    }
+
+    start = (
+        x,
+        y
+    )
+
+    # Bereits sicher.
+    if danger_map[x, y] == 0:
+        return None
+
+    queue = deque()
+    queue.append(
+        (start, None)
+    )
+
+    visited = {
+        start
+    }
+
+    directions = [
+        ((0, -1), "UP"),
+        ((1, 0), "RIGHT"),
+        ((0, 1), "DOWN"),
+        ((-1, 0), "LEFT")
+    ]
+
+    while queue:
+
+        (
+            current_x,
+            current_y
+        ), first_action = queue.popleft()
+
+        # Sicheres Feld gefunden.
+        if danger_map[
+            current_x,
+            current_y
+        ] == 0:
+
+            return first_action
+
+        for (dx, dy), action in directions:
+
+            nx = current_x + dx
+            ny = current_y + dy
+
+            next_position = (
+                nx,
+                ny
+            )
+
+            if next_position in visited:
+                continue
+
+            if field[nx, ny] != 0:
+                continue
+
+            if next_position in bomb_positions:
+                continue
+
+            visited.add(
+                next_position
+            )
+
+            if first_action is None:
+                new_first_action = action
+            else:
+                new_first_action = first_action
+
+            queue.append(
+                (
+                    next_position,
+                    new_first_action
+                )
+            )
+
+    return None
+
+
 def state_to_features(game_state: dict):
+    """
+    Kompakter State für die Q-Tabelle.
+
+    0 coin_direction
+    1 crate_direction
+    2 up_free
+    3 right_free
+    4 down_free
+    5 left_free
+    6 in_danger
+    7 escape_direction
+    8 bomb_available
+    9 crate_nearby
+    """
+
     if game_state is None:
         return None
 
-    x, y = game_state["self"][3]
-    
-    danger_map = get_danger_map(game_state)
+    x, y = game_state[
+        "self"
+    ][3]
 
-    if game_state["bombs"]:
-        print("Position:", (x, y))
-        print("Bombs:", game_state["bombs"])
-        print("Danger:", danger_map[x, y])
-        print("Escape:", direction_to_safety(game_state))
-        print()
+    field = game_state[
+        "field"
+    ]
 
-    field = game_state["field"]
-    coins = game_state["coins"]
+    coins = game_state[
+        "coins"
+    ]
+
+    danger_map = get_danger_map(
+        game_state
+    )
 
     coin_direction = direction_to_nearest_coin(
         field,
@@ -253,25 +440,62 @@ def state_to_features(game_state: dict):
         coins
     )
 
-    # Prüfen, ob die vier Nachbarfelder frei sind.
-    # field[x, y] == 0 bedeutet: begehbares Feld.
-    up_free = int(field[x, y - 1] == 0)
-    right_free = int(field[x + 1, y] == 0)
-    down_free = int(field[x, y + 1] == 0)
-    left_free = int(field[x - 1, y] == 0)
-    
-    in_danger = int(danger_map[x, y] == 1)
+    crate_direction = direction_to_nearest_crate(
+        field,
+        (x, y)
+    )
 
-    escape_direction = direction_to_safety(game_state)
+    # Genau wie beim ursprünglichen Agenten:
+    # nur das field wird hier betrachtet.
+    up_free = int(
+        field[x, y - 1] == 0
+    )
+
+    right_free = int(
+        field[x + 1, y] == 0
+    )
+
+    down_free = int(
+        field[x, y + 1] == 0
+    )
+
+    left_free = int(
+        field[x - 1, y] == 0
+    )
+
+    crate_nearby = int(
+        field[x, y - 1] == 1
+        or field[x + 1, y] == 1
+        or field[x, y + 1] == 1
+        or field[x - 1, y] == 1
+    )
+
+    in_danger = int(
+        danger_map[x, y] == 1
+    )
+
+    escape_direction = direction_to_safety(
+        game_state
+    )
+
+    bomb_available = int(
+        game_state["self"][2]
+    )
 
     state = (
         coin_direction,
+        crate_direction,
+
         up_free,
         right_free,
         down_free,
         left_free,
+
         in_danger,
         escape_direction,
+
+        bomb_available,
+        crate_nearby
     )
 
     return state
